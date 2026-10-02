@@ -1,0 +1,11 @@
+node_modules/
+dist/
+outputs/
+work/
+*.tsbuildinfo
+.DS_Store
+
+# Nieaktualne, nieużywane warianty maskotki.
+public/atlaslaw*.png
+public/botek.png
+
