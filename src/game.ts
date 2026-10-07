@@ -1,5 +1,5 @@
 import { categorySets, chaosLetters, dictionary, funnyFragments, normalLetters, quips } from './data'
-import type { Category, Difficulty, RoundResult, RowResult, Settings } from './types'
+import type { Category, Difficulty, LearnedAnswers, RoundResult, RowResult, Settings } from './types'
 
 export const normalize = (value: string) => value.normalize('NFC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('pl-PL')
 export const normalizeForLookup = (value: string) => normalize(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ł/g, 'l')
@@ -48,9 +48,10 @@ export function botAnswer(category: Category, letter: string, difficulty: Diffic
 }
 
 const pick = (items: string[], seed: number) => items[seed % items.length]
-export function scoreRow(category: Category, player: string, bot: string, letter: string, acceptedOverride?: boolean | null): RowResult {
+export function scoreRow(category: Category, player: string, bot: string, letter: string, acceptedOverride?: boolean | null, learned: LearnedAnswers = {}): RowResult {
   const startsCorrectly = startsWithLetter(player, letter)
-  const known = category.funny ? false : inDictionary(category.id, player)
+  const learnedLocally = (learned[category.id] ?? []).some((item) => normalizeForLookup(item) === normalizeForLookup(player))
+  const known = learnedLocally || (!category.funny && inDictionary(category.id, player))
   const wrongCategory = !category.funny && !known && belongsToAnotherCategory(category.id, player)
   const accepted = !player ? false : !startsCorrectly || wrongCategory ? false : acceptedOverride ?? (category.funny ? null : known ? true : null)
   const botValid = Boolean(bot) && startsWithLetter(bot, letter)
@@ -65,8 +66,8 @@ export function scoreRow(category: Category, player: string, bot: string, letter
   }
 }
 
-export function scoreRound(round: number, letter: string, settings: Settings, answers: Record<string, string>, botAnswers: Record<string, string>, overrides: Record<string, boolean | null> = {}): RoundResult {
-  const rows = categorySets[settings.setId].categories.map((category) => scoreRow(category, answers[category.id] ?? '', botAnswers[category.id] ?? '', letter, overrides[category.id]))
+export function scoreRound(round: number, letter: string, settings: Settings, answers: Record<string, string>, botAnswers: Record<string, string>, overrides: Record<string, boolean | null> = {}, learned: LearnedAnswers = {}): RoundResult {
+  const rows = categorySets[settings.setId].categories.map((category) => scoreRow(category, answers[category.id] ?? '', botAnswers[category.id] ?? '', letter, overrides[category.id], learned))
   return { round, letter, rows, playerPoints: rows.reduce((sum, row) => sum + row.playerPoints, 0), botPoints: rows.reduce((sum, row) => sum + row.botPoints, 0) }
 }
 

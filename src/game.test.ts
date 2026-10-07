@@ -61,6 +61,11 @@ describe('punktacja', () => {
     expect(result.rows.find((row) => row.category.id === 'city')?.verdict.accepted).toBeNull()
     expect(recalculateRound(result, 'city', true).rows.find((row) => row.category.id === 'city')?.playerPoints).toBe(10)
   })
+  it('uznaje odpowiedź, której gra nauczyła się lokalnie', () => {
+    const result = scoreRound(1, 'K', defaultSettings, { city: 'Kozia Wólka' }, { city: '' }, {}, { city: ['Kozia Wólka'] })
+    expect(result.rows.find((row) => row.category.id === 'city')?.verdict.accepted).toBe(true)
+    expect(result.rows.find((row) => row.category.id === 'city')?.playerPoints).toBe(10)
+  })
 })
 
 describe('bot', () => {
