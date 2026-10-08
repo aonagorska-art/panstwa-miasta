@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { botAnswer, drawLetter, inDictionary, normalize, recalculateRound, sameAnswer, scoreRound, shouldBotAnswer, startsWithLetter } from './game'
 import { categorySets, chaosLetters, normalLetters } from './data'
+import { dictionaries, entryVariants, getCategorySets, lettersByLanguage } from './language'
 import { defaultSettings, loadGame, saveGame } from './storage'
 import type { ActiveGame } from './types'
 
@@ -22,6 +23,10 @@ describe('litery i normalizacja', () => {
     expect(startsWithLetter('Lublin', 'Ł')).toBe(false)
   })
   it('wykrywa identyczne odpowiedzi', () => expect(sameAnswer(' Nowy   Sącz ', 'nowy sącz')).toBe(true))
+  it('losuje z alfabetu wybranego języka', () => {
+    expect(drawLetter([], false, () => 0, 'ru')).toBe(lettersByLanguage.ru[0])
+    expect(drawLetter([], false, () => 0, 'zh')).toBe('B')
+  })
 })
 
 describe('punktacja', () => {
@@ -66,13 +71,33 @@ describe('punktacja', () => {
     expect(result.rows.find((row) => row.category.id === 'city')?.verdict.accepted).toBe(true)
     expect(result.rows.find((row) => row.category.id === 'city')?.playerPoints).toBe(10)
   })
+  it('sprawdza odpowiedzi w osobnych bazach językowych', () => {
+    expect(inDictionary('animal', 'cat', 'en')).toBe(true)
+    expect(inDictionary('animal', 'кот', 'ru')).toBe(true)
+    expect(inDictionary('animal', 'cat', 'pl')).toBe(false)
+  })
+  it('traktuje chińskie znaki i pinyin jako tę samą odpowiedź', () => {
+    const chinese = { ...defaultSettings, language: 'zh' as const, setId: 'standard' as const }
+    const result = scoreRound(1, 'B', chinese, { city: 'Beijing' }, { city: '北京' })
+    const city = result.rows.find((row) => row.category.id === 'city')
+    expect(city?.verdict.accepted).toBe(true)
+    expect(city?.playerPoints).toBe(5)
+    expect(getCategorySets('zh').standard.categories.find((item) => item.id === 'city')?.label).toContain('城市')
+  })
+  it('automatycznie uznaje niekonwencjonalną odpowiedź z właściwą literą', () => {
+    const settings = { ...defaultSettings, setId: 'funny' as const }
+    const result = scoreRound(1, 'K', settings, { late: 'Kosmici zatrzymali tramwaj' }, { late: '' })
+    const late = result.rows.find((row) => row.category.id === 'late')
+    expect(late?.verdict.accepted).toBe(true)
+    expect(late?.playerPoints).toBe(10)
+  })
 })
 
 describe('bot', () => {
   it('ma różne progi trudności', () => {
-    expect(shouldBotAnswer('tourist', () => .7)).toBe(false)
-    expect(shouldBotAnswer('nerd', () => .7)).toBe(true)
-    expect(shouldBotAnswer('omniscient', () => .9)).toBe(true)
+    expect(shouldBotAnswer('tourist', () => .75)).toBe(false)
+    expect(shouldBotAnswer('nerd', () => .75)).toBe(true)
+    expect(shouldBotAnswer('omniscient', () => .95)).toBe(true)
   })
   it('unika świeżo użytej odpowiedzi, gdy ma wybór', () => {
     const used = new Set<string>()
@@ -90,6 +115,31 @@ describe('bot', () => {
     expect(category.label).toBe('Co chcesz usłyszeć od przełożonego')
     expect(categorySets.funny.categories.some((item) => item.id === 'promo')).toBe(false)
     expect(startsWithLetter(botAnswer(category, 'A', 'omniscient', new Set(), () => 0), 'A')).toBe(true)
+  })
+  it('ma co najmniej jedną odpowiedź dla każdej kategorii i losowanej litery', () => {
+    for (const language of ['en', 'ru', 'zh'] as const) {
+      for (const letter of lettersByLanguage[language]) {
+        for (const category of getCategorySets(language).standard.categories) {
+          expect(botAnswer(category, letter, 'omniscient', new Set(), () => 0, language), `${language}/${letter}/${category.id}`).not.toBe('')
+        }
+      }
+    }
+  })
+  it('ma polską odpowiedź dla każdej zwykłej litery i kategorii', () => {
+    for (const setId of ['standard', 'hard', 'funny'] as const) {
+      for (const letter of normalLetters) {
+        for (const category of categorySets[setId].categories) {
+          expect(botAnswer(category, letter, 'omniscient', new Set(), () => 0), `${setId}/${letter}/${category.id}`).not.toBe('')
+        }
+      }
+    }
+  })
+  it('ma poprawnie przypisane inicjały pinyin', () => {
+    for (const entries of Object.values(dictionaries.zh)) {
+      for (const [letter, answers] of Object.entries(entries)) {
+        for (const answer of answers) expect(entryVariants(answer).at(-1)?.charAt(0).toUpperCase(), answer).toBe(letter)
+      }
+    }
   })
 })
 

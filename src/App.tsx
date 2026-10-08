@@ -23,8 +23,9 @@ import Zap from 'lucide-react/dist/esm/icons/zap'
 import { createDailyChallenge, previousDateKey, type DailyChallenge } from './daily'
 import { categorySets, quips } from './data'
 import { drawLetter, generateBotRound, recalculateRound, scoreRound } from './game'
+import { availableSetIds, getCategorySets, languageOptions } from './language'
 import { clearGame, clearStats, defaultStats, loadGame, loadLearnedAnswers, loadSettings, loadStats, saveGame, saveLearnedAnswer, saveSettings, saveStats } from './storage'
-import type { ActiveGame, CategorySetId, Difficulty, RoundResult, Screen, Settings, Stats, TimeLimit } from './types'
+import type { ActiveGame, CategorySetId, Difficulty, GameLanguage, RoundResult, Screen, Settings, Stats, TimeLimit } from './types'
 
 const difficultyLabels: Record<Difficulty, { name: string; note: string }> = {
   tourist: { name: 'Turystka', note: 'Zna drogę do kuchni. Resztę różnie.' },
@@ -80,6 +81,12 @@ function Logo({ compact = false }: { compact?: boolean }) {
   return <div className={compact ? 'logo compact' : 'logo'} aria-label="Państwa-miasta"><span>Państwa</span><i>miasta</i></div>
 }
 
+function LanguagePicker({ value, onChange, compact = false }: { value: GameLanguage; onChange: (language: GameLanguage) => void; compact?: boolean }) {
+  return <div className={`language-picker ${compact ? 'compact' : ''}`} aria-label="Język rozgrywki">
+    {(Object.keys(languageOptions) as GameLanguage[]).map((language) => <button key={language} className={value === language ? 'active' : ''} onClick={() => onChange(language)} aria-pressed={value === language} title={languageOptions[language].note}><b>{languageOptions[language].short}</b>{!compact && <span>{languageOptions[language].nativeName}</span>}</button>)}
+  </div>
+}
+
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   useEffect(() => { const close = (event: KeyboardEvent) => event.key === 'Escape' && onClose(); document.addEventListener('keydown', close); return () => document.removeEventListener('keydown', close) }, [onClose])
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -102,10 +109,11 @@ function App() {
   const [learnedAnswers, setLearnedAnswers] = useState(loadLearnedAnswers)
   const usedBotAnswers = useRef(new Set<string>())
   const savedGame = loadGame()
-  const dailyChallenge = createDailyChallenge()
+  const dailyChallenge = createDailyChallenge(new Date(), settings.language)
 
   useEffect(() => { saveSettings(settings) }, [settings])
   useEffect(() => { document.documentElement.dataset.motion = settings.motion ? 'on' : 'off' }, [settings.motion])
+  useEffect(() => { document.documentElement.dataset.language = settings.language }, [settings.language])
   useEffect(() => { const frame = requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' })); return () => cancelAnimationFrame(frame) }, [screen])
 
   const ping = () => {
@@ -117,7 +125,7 @@ function App() {
   }
 
   const beginGame = (nextSettings = settings, launch: { source?: 'regular' | 'daily'; dailyKey?: string; letters?: string[] } = {}) => {
-    const letter = launch.letters?.[0] ?? drawLetter([], nextSettings.chaos)
+    const letter = launch.letters?.[0] ?? drawLetter([], nextSettings.chaos, Math.random, nextSettings.language)
     const next: ActiveGame = { settings: nextSettings, round: 1, usedLetters: [letter], playerScore: 0, botScore: 0, letter, answers: {}, results: [], startedAt: Date.now(), timeLeft: nextSettings.timeLimit, source: launch.source ?? 'regular', dailyKey: launch.dailyKey, dailyLetters: launch.letters }
     setGame(next); saveGame(next); setReview(null); setScreen('play'); setBotStatus(randomItem(quips.start)); ping()
   }
@@ -166,8 +174,8 @@ function App() {
   const decide = (categoryId: string, accepted: boolean) => setReview((current) => {
     if (!current) return current
     const row = current.rows.find((item) => item.category.id === categoryId)
-    if (accepted && row?.player) setLearnedAnswers(saveLearnedAnswer(categoryId, row.player))
-    return recalculateRound(current, categoryId, accepted)
+    if (accepted && row?.player && game) setLearnedAnswers(saveLearnedAnswer(categoryId, row.player, game.settings.language))
+    return recalculateRound(current, categoryId, accepted, game?.settings.language)
   })
 
   const updateFinalStats = (finished: ActiveGame) => {
@@ -179,7 +187,7 @@ function App() {
       ...stats, games: stats.games + 1, wins: stats.wins + (won ? 1 : 0), losses: stats.losses + (lost ? 1 : 0), draws: stats.draws + (!won && !lost ? 1 : 0),
       bestScore: Math.max(stats.bestScore, finished.playerScore), favoriteSets: { ...stats.favoriteSets, [finished.settings.setId]: stats.favoriteSets[finished.settings.setId] + 1 },
       winStreak: won ? stats.winStreak + 1 : 0, bestWinStreak: Math.max(stats.bestWinStreak, won ? stats.winStreak + 1 : 0),
-      recentGames: [{ setId: finished.settings.setId, difficulty: finished.settings.difficulty, playerScore: finished.playerScore, botScore: finished.botScore, won, playedAt: Date.now() }, ...stats.recentGames].slice(0, 8),
+      recentGames: [{ setId: finished.settings.setId, difficulty: finished.settings.difficulty, language: finished.settings.language, playerScore: finished.playerScore, botScore: finished.botScore, won, playedAt: Date.now() }, ...stats.recentGames].slice(0, 8),
       daily: completedDaily ? {
         lastCompleted: finished.dailyKey!,
         streak: nextDailyStreak,
@@ -198,7 +206,7 @@ function App() {
       const finished = { ...game, playerScore, botScore, results }
       setGame(finished); clearGame(); updateFinalStats(finished); setScreen('summary'); return
     }
-    const letter = game.source === 'daily' && game.dailyLetters ? game.dailyLetters[game.round] : drawLetter(game.usedLetters, game.settings.chaos)
+    const letter = game.source === 'daily' && game.dailyLetters ? game.dailyLetters[game.round] : drawLetter(game.usedLetters, game.settings.chaos, Math.random, game.settings.language)
     const next: ActiveGame = { ...game, round: game.round + 1, letter, usedLetters: [...game.usedLetters, letter], answers: {}, results, playerScore, botScore, timeLeft: game.settings.timeLimit, startedAt: Date.now() }
     setGame(next); saveGame(next); setReview(null); setScreen('play'); window.scrollTo({ top: 0, behavior: settings.motion ? 'smooth' : 'auto' })
   }
@@ -206,13 +214,16 @@ function App() {
   const goHome = () => { setScreen('home'); setGame(null); setReview(null) }
   const saveAndGoHome = () => { if (game) saveGame(game); setQuitOpen(false); goHome() }
   const abandonGame = () => { clearGame(); setQuitOpen(false); goHome() }
-  const presetSettings = (preset: PlayPreset) => ({ ...settings, ...preset.settings })
+  const presetSettings = (preset: PlayPreset) => {
+    const next = { ...settings, ...preset.settings }
+    return next.language === 'pl' ? next : { ...next, setId: 'standard' as const, chaos: false }
+  }
   const choosePreset = (preset: PlayPreset) => { setSettings(presetSettings(preset)); setScreen('config') }
   const quickPlay = () => beginGame(presetSettings(playPresets[0]))
 
   return <div className="app-shell">
     {screen !== 'home' && <header className="game-nav"><Logo compact /><div className="nav-actions">{(screen === 'play' || screen === 'review') && <button className="ghost-btn exit-link" aria-label="Wróć do menu" onClick={() => setQuitOpen(true)}><LogOut /> <span>Menu</span></button>}<button className="ghost-btn" aria-label="Zasady" onClick={() => setRulesOpen(true)}><HelpCircle /> <span>Zasady</span></button><button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="Ustawienia"><SettingsIcon /></button></div></header>}
-    {screen === 'home' && <HomeScreen stats={stats} savedGame={savedGame} dailyChallenge={dailyChallenge} onDaily={beginDailyChallenge} onQuickPlay={quickPlay} onPlay={() => setScreen('config')} onPreset={choosePreset} onResume={resume} onRules={() => setRulesOpen(true)} onSettings={() => setSettingsOpen(true)} />}
+    {screen === 'home' && <HomeScreen settings={settings} setSettings={setSettings} stats={stats} savedGame={savedGame} dailyChallenge={dailyChallenge} onDaily={beginDailyChallenge} onQuickPlay={quickPlay} onPlay={() => setScreen('config')} onPreset={choosePreset} onResume={resume} onRules={() => setRulesOpen(true)} onSettings={() => setSettingsOpen(true)} />}
     {screen === 'config' && <ConfigScreen settings={settings} setSettings={setSettings} onBack={goHome} onStart={() => beginGame()} />}
     {screen === 'play' && game && <PlayScreen key={game.round} game={game} botStatus={botStatus} onAnswer={changeAnswer} onFinish={finishRound} />}
     {screen === 'review' && game && review && <ReviewScreen game={game} result={review} onDecide={decide} onNext={nextRound} />}
@@ -223,39 +234,44 @@ function App() {
   </div>
 }
 
-function HomeScreen({ stats, savedGame, dailyChallenge, onDaily, onQuickPlay, onPlay, onPreset, onResume, onRules, onSettings }: { stats: Stats; savedGame: ActiveGame | null; dailyChallenge: DailyChallenge; onDaily: () => void; onQuickPlay: () => void; onPlay: () => void; onPreset: (preset: PlayPreset) => void; onResume: () => void; onRules: () => void; onSettings: () => void }) {
+function HomeScreen({ settings, setSettings, stats, savedGame, dailyChallenge, onDaily, onQuickPlay, onPlay, onPreset, onResume, onRules, onSettings }: { settings: Settings; setSettings: React.Dispatch<React.SetStateAction<Settings>>; stats: Stats; savedGame: ActiveGame | null; dailyChallenge: DailyChallenge; onDaily: () => void; onQuickPlay: () => void; onPlay: () => void; onPreset: (preset: PlayPreset) => void; onResume: () => void; onRules: () => void; onSettings: () => void }) {
   const dailyScore = stats.daily.scores[dailyChallenge.key]
-  const recommendations = personalizedPresets(stats)
-  return <main className="welcome-shell"><header className="topbar"><Logo compact /><button className="icon-btn" onClick={onSettings} aria-label="Ustawienia"><SettingsIcon /></button></header>
+  const recommendations = personalizedPresets(stats).filter(({ preset }) => settings.language === 'pl' || preset.settings.setId === 'standard')
+  const sets = getCategorySets(settings.language)
+  const changeLanguage = (language: GameLanguage) => setSettings((current) => ({ ...current, language, setId: language === 'pl' ? current.setId : 'standard', chaos: language === 'pl' && current.chaos }))
+  return <main className="welcome-shell"><header className="topbar"><Logo compact /><div className="topbar-tools"><LanguagePicker compact value={settings.language} onChange={changeLanguage}/><button className="icon-btn" onClick={onSettings} aria-label="Ustawienia"><SettingsIcon /></button></div></header>
     <section className="hero-card entertainment-hero"><div className="hero-copy"><h1>Jedna litera.<br/>Wszystko do ugrania.</h1><p className="slogan">Znajdź odpowiedzi, zanim Balbina zrobi to pierwsza. Klasyka, trudniejsze pytania albo kontrolowany absurd.</p>
       <div className="hero-actions"><button className="primary hero-play" onClick={onQuickPlay}><Gamepad2 /> Graj</button><button className="secondary" onClick={onPlay}>Wybierz wariant</button><button className="hero-rules" onClick={onRules}>Jak to działa?</button></div>
       {stats.games > 0 && <div className="mini-stats"><div><b>{stats.games}</b><span>gier</span></div><div><b>{stats.wins}</b><span>wygranych</span></div><div><b>{stats.bestScore}</b><span>rekord</span></div></div>}
     </div><div className="bot-stage"><div className="speech"><b>Balbina, przeciwniczka</b><span>Nie zdradza strategii. Podobno jej nie potrzebuje.</span></div><img src="/balbina-editorial.png" alt="Balbina, subtelnie ilustrowana szylkretowa kotka"/></div></section>
-    {savedGame && <section className="continue-card"><div><span>KONTYNUUJ GRĘ</span><h2>Runda {savedGame.round} z {savedGame.settings.rounds}</h2><p>{categorySets[savedGame.settings.setId].name} · litera {savedGame.letter} · wynik {savedGame.playerScore}:{savedGame.botScore}</p></div><button className="primary" onClick={onResume}><RotateCcw /> Wróć do rundy</button></section>}
-    <section className={`daily-challenge ${dailyScore !== undefined ? 'completed' : ''}`}><div className="daily-copy"><span><Sparkles /> DZISIEJSZE WYZWANIE · {dailyChallenge.label.toLocaleUpperCase('pl-PL')}</span><h2>Jedno wyzwanie na dziś.</h2><p>{categorySets[dailyChallenge.setId].name} · 3 rundy · 90 sekund na rundę. Zestaw zmieni się jutro.</p><div className="daily-letters">{dailyChallenge.letters.map((letter) => <b key={letter}>{letter}</b>)}</div></div><div className="daily-status"><img src="/balbina-editorial.png" alt="Balbina zaprasza do dzisiejszego wyzwania"/>{dailyScore !== undefined && <div className="daily-result"><small>TWÓJ NAJLEPSZY WYNIK</small><strong>{dailyScore}</strong><span>Seria: {stats.daily.streak} {stats.daily.streak === 1 ? 'dzień' : 'dni'}</span></div>}<button className="primary" onClick={onDaily}>{dailyScore !== undefined ? 'Zagraj ponownie' : 'Podejmij wyzwanie'} <ChevronRight /></button></div></section>
+    {savedGame && <section className="continue-card"><div><span>KONTYNUUJ GRĘ</span><h2>Runda {savedGame.round} z {savedGame.settings.rounds}</h2><p>{getCategorySets(savedGame.settings.language ?? 'pl')[savedGame.settings.setId].name} · {languageOptions[savedGame.settings.language ?? 'pl'].nativeName} · litera {savedGame.letter} · wynik {savedGame.playerScore}:{savedGame.botScore}</p></div><button className="primary" onClick={onResume}><RotateCcw /> Wróć do rundy</button></section>}
+    <section className={`daily-challenge ${dailyScore !== undefined ? 'completed' : ''}`}><div className="daily-copy"><span><Sparkles /> DZISIEJSZE WYZWANIE · {dailyChallenge.label.toLocaleUpperCase(languageOptions[settings.language].locale)}</span><h2>Jedno wyzwanie na dziś.</h2><p>{sets[dailyChallenge.setId].name} · {languageOptions[settings.language].nativeName} · 3 rundy · 90 sekund na rundę.</p><div className="daily-letters">{dailyChallenge.letters.map((letter) => <b key={letter}>{letter}</b>)}</div></div><div className="daily-status"><img src="/balbina-editorial.png" alt="Balbina zaprasza do dzisiejszego wyzwania"/>{dailyScore !== undefined && <div className="daily-result"><small>TWÓJ NAJLEPSZY WYNIK</small><strong>{dailyScore}</strong><span>Seria: {stats.daily.streak} {stats.daily.streak === 1 ? 'dzień' : 'dni'}</span></div>}<button className="primary" onClick={onDaily}>{dailyScore !== undefined ? 'Zagraj ponownie' : 'Podejmij wyzwanie'} <ChevronRight /></button></div></section>
     {stats.games < 3 && <section className="getting-started"><Sparkles/><div><small>POZNAJ GRĘ W PRAKTYCE</small><b>{stats.games === 0 ? 'Pierwsza partia zajmuje około czterech minut.' : `Jeszcze ${3 - stats.games} ${3 - stats.games === 1 ? 'gra' : 'gry'}, a rekomendacje zaczną korzystać z Twoich wyników.`}</b><span>Wpisujesz odpowiedzi po kolei, a nieznane słowa możesz potwierdzić — Balbina zapamięta je na tym urządzeniu.</span></div><button onClick={onRules}>Zobacz zasady <ChevronRight/></button></section>}
-    <section className="discovery-section personalized-section"><div className="discovery-heading"><div><span>{stats.games >= 3 ? 'NA PODSTAWIE TWOICH GIER' : 'WARTO SPRÓBOWAĆ'}</span><h2>{stats.games >= 3 ? 'Wybrane dla Ciebie' : 'Dobry następny krok'}</h2></div>{stats.games > 0 && stats.games < 3 && <em>Personalizacja po 3 grach</em>}</div><div className="personalized-rail">{recommendations.map(({ preset, reason }, index) => <button key={preset.id} className={`personalized-card personalized-${index + 1}`} onClick={() => onPreset(preset)}><small>{reason}</small><strong>{preset.name}</strong><p>{preset.note}</p><span>{categorySets[preset.settings.setId].name} · {preset.settings.rounds} rund <ChevronRight /></span></button>)}</div></section>
-    <section className="discovery-section"><div className="discovery-heading"><div><span>GOTOWE SCENARIUSZE</span><h2>Na co masz dziś ochotę?</h2></div><button onClick={onPlay}>Dostosuj własną grę <ChevronRight /></button></div><div className="preset-rail">{playPresets.map((preset, index) => <button key={preset.id} className={`preset-card preset-${index + 1}`} onClick={() => onPreset(preset)}><small>{preset.kicker}</small><strong>{preset.name}</strong><p>{preset.note}</p><span>Zobacz wariant <ChevronRight /></span></button>)}</div></section>
+    <section className="discovery-section personalized-section"><div className="discovery-heading"><div><span>{stats.games >= 3 ? 'NA PODSTAWIE TWOICH GIER' : 'WARTO SPRÓBOWAĆ'}</span><h2>{stats.games >= 3 ? 'Wybrane dla Ciebie' : 'Dobry następny krok'}</h2></div>{stats.games > 0 && stats.games < 3 && <em>Personalizacja po 3 grach</em>}</div><div className="personalized-rail">{recommendations.map(({ preset, reason }, index) => <button key={preset.id} className={`personalized-card personalized-${index + 1}`} onClick={() => onPreset(preset)}><small>{reason}</small><strong>{preset.name}</strong><p>{preset.note}</p><span>{sets[settings.language === 'pl' ? preset.settings.setId : 'standard'].name} · {preset.settings.rounds} rund <ChevronRight /></span></button>)}</div></section>
+    <section className="discovery-section"><div className="discovery-heading"><div><span>GOTOWE SCENARIUSZE</span><h2>Na co masz dziś ochotę?</h2></div><button onClick={onPlay}>Dostosuj własną grę <ChevronRight /></button></div><div className="preset-rail">{playPresets.filter((preset) => settings.language === 'pl' || preset.settings.setId === 'standard').map((preset, index) => <button key={preset.id} className={`preset-card preset-${index + 1}`} onClick={() => onPreset(preset)}><small>{preset.kicker}</small><strong>{preset.name}</strong><p>{preset.note}</p><span>Zobacz wariant <ChevronRight /></span></button>)}</div></section>
   </main>
 }
 
 function ConfigScreen({ settings, setSettings, onBack, onStart }: { settings: Settings; setSettings: React.Dispatch<React.SetStateAction<Settings>>; onBack: () => void; onStart: () => void }) {
   const [detailsOpen, setDetailsOpen] = useState(false)
   const patch = <K extends keyof Settings>(key: K, value: Settings[K]) => setSettings((current) => ({ ...current, [key]: value }))
+  const sets = getCategorySets(settings.language)
+  const changeLanguage = (language: GameLanguage) => setSettings((current) => ({ ...current, language, setId: language === 'pl' ? current.setId : 'standard', chaos: language === 'pl' && current.chaos }))
   return <main className="page config-page"><button className="back-link" onClick={onBack}><ArrowLeft /> Wróć</button><div className="section-heading config-heading"><span>WYBIERZ WARIANT</span><h1>Na co masz dziś ochotę?</h1><p>Wybierz klimat i zacznij. Reszta ustawień może poczekać.</p></div>
-    <section className="setup-section mode-section"><div className="mode-rail">{(Object.keys(categorySets) as CategorySetId[]).map((id) => <button key={id} className={`mode-card mode-${id} ${settings.setId === id ? 'selected' : ''}`} onClick={() => patch('setId', id)}><div className="mode-art"><img src={modeDetails[id].art} alt=""/><span>{modeKicker[id]}</span></div><div className="mode-copy"><div className="choice-check">{settings.setId === id && <Check />}</div><small>{categorySets[id].categories.length} KATEGORII</small><b>{categorySets[id].name}</b><p>{categorySets[id].note}</p><div className="mode-meta"><span>{modeDetails[id].duration}</span><span>{modeDetails[id].mood}</span></div></div></button>)}</div></section>
+    <section className="setup-section language-section"><div className="language-heading"><div><span>JĘZYK ROZGRYWKI</span><h2>W którym języku gramy?</h2></div><p>{languageOptions[settings.language].note}</p></div><LanguagePicker value={settings.language} onChange={changeLanguage}/>{settings.language === 'zh' && <div className="pinyin-note"><b>中文 działa inaczej.</b><span>Losujemy pierwszą literę wymowy pinyin. Możesz wpisać odpowiedź znakami, np. 北京, albo jako „Beijing”.</span></div>}</section>
+    <section className="setup-section mode-section"><div className="mode-rail">{availableSetIds(settings.language).map((id) => <button key={id} className={`mode-card mode-${id} ${settings.setId === id ? 'selected' : ''}`} onClick={() => patch('setId', id)}><div className="mode-art"><img src={modeDetails[id].art} alt=""/><span>{modeKicker[id]}</span></div><div className="mode-copy"><div className="choice-check">{settings.setId === id && <Check />}</div><small>{sets[id].categories.length} KATEGORII</small><b>{sets[id].name}</b><p>{sets[id].note}</p><div className="mode-meta"><span>{modeDetails[id].duration}</span><span>{modeDetails[id].mood}</span></div></div></button>)}</div>{settings.language !== 'pl' && <p className="language-roadmap">Tryby „Trudne” i „Niekonwencjonalne” pozostają na razie po polsku — ich bazy wymagają osobnego opracowania językowego.</p>}</section>
     <button className="customizer-toggle" onClick={() => setDetailsOpen((open) => !open)} aria-expanded={detailsOpen}><SettingsIcon /> {detailsOpen ? 'Ukryj ustawienia' : 'Dostosuj grę'} <ChevronRight /></button>
     {detailsOpen && <div className="advanced-settings"><section className="setup-section"><h2>Forma Balbiny</h2><div className="choice-grid">{(Object.keys(difficultyLabels) as Difficulty[]).map((id) => <button key={id} className={`choice-card ${settings.difficulty === id ? 'selected' : ''}`} onClick={() => patch('difficulty', id)}><Compass /><b>{difficultyLabels[id].name}</b><p>{difficultyLabels[id].note}</p></button>)}</div></section>
       <div className="config-row"><section className="setup-section"><h2>Czas rundy</h2><div className="segmented">{([60,90,120,0] as TimeLimit[]).map((time) => <button key={time} className={settings.timeLimit === time ? 'active' : ''} onClick={() => patch('timeLimit', time)}>{time || '∞'}{time > 0 && <small>s</small>}</button>)}</div></section>
         <section className="setup-section"><h2>Liczba rund</h2><div className="segmented">{([3,5,10] as const).map((rounds) => <button key={rounds} className={settings.rounds === rounds ? 'active' : ''} onClick={() => patch('rounds', rounds)}>{rounds}</button>)}</div></section></div>
-      <section className="setup-section toggles"><label><div><Zap /><span><b>Tryb chaosu</b><small>Dodaje polskie znaki do puli liter.</small></span></div><input type="checkbox" checked={settings.chaos} onChange={(event) => patch('chaos', event.target.checked)} /><i /></label><label><div>{settings.sound ? <Volume2 /> : <VolumeX />}<span><b>Dźwięki</b><small>Subtelne i całkowicie lokalne.</small></span></div><input type="checkbox" checked={settings.sound} onChange={(event) => patch('sound', event.target.checked)} /><i /></label></section>
+      <section className="setup-section toggles">{settings.language === 'pl' && <label><div><Zap /><span><b>Tryb chaosu</b><small>Dodaje polskie znaki do puli liter.</small></span></div><input type="checkbox" checked={settings.chaos} onChange={(event) => patch('chaos', event.target.checked)} /><i /></label>}<label><div>{settings.sound ? <Volume2 /> : <VolumeX />}<span><b>Dźwięki</b><small>Subtelne i całkowicie lokalne.</small></span></div><input type="checkbox" checked={settings.sound} onChange={(event) => patch('sound', event.target.checked)} /><i /></label></section>
       <div className="score-note"><Medal /><p><b>Punktacja:</b> inna poprawna odpowiedź = 10 pkt, taka sama jak Balbiny = 5 pkt, brak lub odrzucona = 0 pkt.</p></div></div>}
-    <div className="sticky-start"><div><b>{categorySets[settings.setId].name} · {settings.rounds} rund</b><span>{settings.timeLimit ? `${settings.timeLimit} sekund` : 'bez limitu'} · {difficultyLabels[settings.difficulty].name}</span></div><button className="primary" onClick={onStart}>Losuj literę <ChevronRight /></button></div>
+    <div className="sticky-start"><div><b>{sets[settings.setId].name} · {languageOptions[settings.language].nativeName} · {settings.rounds} rund</b><span>{settings.timeLimit ? `${settings.timeLimit} sekund` : 'bez limitu'} · {difficultyLabels[settings.difficulty].name}</span></div><button className="primary" onClick={onStart}>Losuj literę <ChevronRight /></button></div>
   </main>
 }
 
 function PlayScreen({ game, botStatus, onAnswer, onFinish }: { game: ActiveGame; botStatus: string; onAnswer: (id: string, value: string) => void; onFinish: () => void }) {
-  const categories = categorySets[game.settings.setId].categories
+  const categories = getCategorySets(game.settings.language ?? 'pl')[game.settings.setId].categories
   const [step, setStep] = useState(0)
   const [skipped, setSkipped] = useState<Set<string>>(new Set())
   const category = categories[step]
@@ -274,7 +290,7 @@ function PlayScreen({ game, botStatus, onAnswer, onFinish }: { game: ActiveGame;
   return <main className="page play-page"><section className="play-head"><div><span className="round-label">RUNDA {game.round} / {game.settings.rounds}</span><div className="scoreline"><span>Ty <b>{game.playerScore}</b></span><i>:</i><span><b>{game.botScore}</b> Balbina</span></div></div><div className="letter-card"><small>LITERA</small><strong>{game.letter}</strong></div><div className={`timer ${game.timeLeft > 0 && game.timeLeft <= 10 ? 'urgent' : ''}`}><Clock3 /><small>CZAS</small><b>{game.settings.timeLimit ? formatTime(game.timeLeft) : '∞'}</b></div></section>
     <section className="bot-strip"><img src="/balbina-editorial.png" alt="Portret Balbiny"/><div><small>BALBINA</small><b>{botStatus}</b></div><span className="thinking-dots"><i/><i/><i/></span></section>
     <div className="progress-row"><span>Kategoria {step + 1} z {categories.length}</span><div><i style={{ width: `${(step + 1) / categories.length * 100}%` }} /></div><b>{Math.round((step + 1) / categories.length * 100)}%</b></div>
-    <form className="focus-answer" onSubmit={(event) => { event.preventDefault(); advance() }}><div className="focus-counter">{String(step + 1).padStart(2, '0')} <span>/ {String(categories.length).padStart(2, '0')}</span></div><label htmlFor={`answer-${category.id}`}><small>ODPOWIEDŹ NA LITERĘ {game.letter}</small><strong>{category.label}</strong></label><div className="focus-input"><input id={`answer-${category.id}`} autoFocus aria-label={category.label} value={answer} onChange={(event) => { setSkipped((current) => { const next = new Set(current); next.delete(category.id); return next }); onAnswer(category.id, event.target.value) }} placeholder={`${game.letter}…`} autoCapitalize="words" autoComplete="off"/><em>{game.letter}</em></div><div className="focus-actions">{step > 0 && <button type="button" className="ghost-btn" onClick={() => setStep((current) => current - 1)}><ArrowLeft /> Wstecz</button>}<button type="button" className="skip-btn" onClick={skip}>{skipped.has(category.id) ? 'Pominięto' : 'Nie wiem'}</button><button className="primary next-answer" type="submit" disabled={!canContinue}>{step === categories.length - 1 ? <>Zakończ rundę <Check /></> : <>Dalej <ChevronRight /></>}</button></div></form>
+    <form className="focus-answer" onSubmit={(event) => { event.preventDefault(); advance() }}><div className="focus-counter">{String(step + 1).padStart(2, '0')} <span>/ {String(categories.length).padStart(2, '0')}</span></div><label htmlFor={`answer-${category.id}`}><small>{game.settings.language === 'zh' ? `PINYIN NA LITERĘ ${game.letter} · ZNAKI LUB ŁACINKA` : `ODPOWIEDŹ NA LITERĘ ${game.letter}`}</small><strong>{category.label}</strong></label><div className="focus-input"><input id={`answer-${category.id}`} autoFocus aria-label={category.label} value={answer} onChange={(event) => { setSkipped((current) => { const next = new Set(current); next.delete(category.id); return next }); onAnswer(category.id, event.target.value) }} placeholder={game.settings.language === 'zh' ? `${game.letter}… / 汉字` : `${game.letter}…`} autoCapitalize="words" autoComplete="off"/><em>{game.letter}</em></div><div className="focus-actions">{step > 0 && <button type="button" className="ghost-btn" onClick={() => setStep((current) => current - 1)}><ArrowLeft /> Wstecz</button>}<button type="button" className="skip-btn" onClick={skip}>{skipped.has(category.id) ? 'Pominięto' : 'Nie wiem'}</button><button className="primary next-answer" type="submit" disabled={!canContinue}>{step === categories.length - 1 ? <>Zakończ rundę <Check /></> : <>Dalej <ChevronRight /></>}</button></div></form>
   </main>
 }
 
@@ -307,6 +323,7 @@ function ReviewScreen({ game, result, onDecide, onNext }: { game: ActiveGame; re
 function SummaryScreen({ game, stats, onRecommended, onRematch, onNew, onHome }: { game: ActiveGame; stats: Stats; onRecommended: (preset: PlayPreset) => void; onRematch: () => void; onNew: () => void; onHome: () => void }) {
   const won = game.playerScore > game.botScore; const draw = game.playerScore === game.botScore
   const recommendation = nextRecommendation(game)
+  const sets = getCategorySets(game.settings.language ?? 'pl')
   const allRows = game.results.flatMap((round) => round.rows)
   const categoryPoints = new Map<string, number>(); allRows.forEach((row) => categoryPoints.set(row.category.label, (categoryPoints.get(row.category.label) ?? 0) + row.playerPoints))
   const sorted = [...categoryPoints].sort((a,b) => b[1] - a[1])
@@ -314,7 +331,7 @@ function SummaryScreen({ game, stats, onRecommended, onRematch, onNew, onHome }:
   return <main className="page summary-page"><section className={`final-hero ${won ? 'won' : draw ? 'draw' : 'lost'}`}><div className="confetti">✦ ● ◆ ✦</div><img className="summary-cat" src="/balbina-editorial.png" alt={won ? 'Balbina przyjmuje porażkę z godnością' : draw ? 'Balbina analizuje remis' : 'Balbina zadowolona ze zwycięstwa'}/><div className="final-copy"><Trophy /><span>KONIEC GRY</span><h1>{won ? 'Balbina pokonana.' : draw ? 'Elegancki remis.' : 'Balbina wygrała.'}</h1><p>{randomItem(won ? quips.win : draw ? quips.draw : quips.lose)}</p><div className="final-score"><div><small>TY</small><b>{game.playerScore}</b></div><i>:</i><div><small>BALBINA</small><b>{game.botScore}</b></div></div></div></section>
     <section className="insights"><article><Sparkles/><small>NAJLEPSZA KATEGORIA</small><b>{sorted[0]?.[0] ?? '—'}</b></article><article><BarChart3/><small>NAJMNIEJ PUNKTÓW</small><b>{sorted.at(-1)?.[0] ?? '—'}</b></article><article><Zap/><small>NAJDŁUŻSZA ODPOWIEDŹ</small><b>„{unusual}”</b></article></section>
     {game.source === 'daily' && <section className="daily-complete"><Sparkles/><div><small>DZISIEJSZE WYZWANIE UKOŃCZONE</small><b>{stats.daily.streak} {stats.daily.streak === 1 ? 'dzień' : 'dni'} regularnej gry</b><span>Najlepsza seria: {stats.daily.bestStreak}</span></div></section>}
-    <section className="next-recommendation"><div><small>BALBINA POLECA NASTĘPNE</small><h2>{recommendation.preset.name}</h2><p>{recommendation.reason}</p><span>{categorySets[recommendation.preset.settings.setId].name} · {recommendation.preset.settings.rounds} rund · {recommendation.preset.settings.timeLimit ? `${recommendation.preset.settings.timeLimit} sekund` : 'bez limitu'}</span><button className="primary" onClick={() => onRecommended(recommendation.preset)}>Zagraj teraz <ChevronRight /></button></div><img src={modeDetails[recommendation.preset.settings.setId].art} alt="Balbina poleca kolejną rozgrywkę"/></section>
+    <section className="next-recommendation"><div><small>BALBINA POLECA NASTĘPNE</small><h2>{recommendation.preset.name}</h2><p>{recommendation.reason}</p><span>{sets[game.settings.language === 'pl' ? recommendation.preset.settings.setId : 'standard'].name} · {recommendation.preset.settings.rounds} rund · {recommendation.preset.settings.timeLimit ? `${recommendation.preset.settings.timeLimit} sekund` : 'bez limitu'}</span><button className="primary" onClick={() => onRecommended(recommendation.preset)}>Zagraj teraz <ChevronRight /></button></div><img src={modeDetails[recommendation.preset.settings.setId].art} alt="Balbina poleca kolejną rozgrywkę"/></section>
     <section className="rounds-summary"><h2>Rundy pod lupą</h2>{game.results.map((round) => <div key={round.round}><span>Runda {round.round}</span><b className="round-letter">{round.letter}</b><span>Ty <b>{round.playerPoints}</b></span><span>Balbina <b>{round.botPoints}</b></span></div>)}</section>
     <div className="summary-actions"><button className="primary" onClick={onRematch}><RotateCcw /> Rewanż</button><button className="secondary dark" onClick={onNew}><MapIcon /> Nowa gra</button><button className="ghost-btn" onClick={onHome}><Home /> Strona główna</button></div>
   </main>
